@@ -4,9 +4,10 @@ import os
 from multiprocessing import Pool
 from time import time
 
-import dsp
 import numpy as np
 from scipy.io.wavfile import read
+
+import dsp
 
 overlapping = 512
 chunk_size = 1024
@@ -14,7 +15,7 @@ num_frames = 25
 
 
 def getNormalizedIntensity(x_f):
-    '''
+    """
     Compute the input feature needed by the localization neural network.
 
     Parameters
@@ -27,7 +28,7 @@ def getNormalizedIntensity(x_f):
     -------
     inputFeat_f: nd-array
         Shape: (nBatch, lSentence, nBand, nFeat)
-    '''
+    """
     (lBatch, nChannel, lSentence, nBand) = x_f.shape
     nFeat = 6
     inputFeat_f = np.empty((lBatch, lSentence, nBand, nFeat), dtype=np.float32)
@@ -41,8 +42,14 @@ def getNormalizedIntensity(x_f):
 
         # Normalize it in each TF bin
         coeffNorm = (abs(sig_f[0]) ** 2 + np.sum(abs(sig_f[1:]) ** 2 / 3, axis=0))[:, :, np.newaxis]
-        inputFeat_f[nBatch, :, :, :nFeat // 2] = np.real(intensityVect) / coeffNorm
-        inputFeat_f[nBatch, :, :, nFeat // 2:] = np.imag(intensityVect) / coeffNorm
+        inputFeat_f[nBatch, :, :, :nFeat // 2] = np.divide(
+            np.real(intensityVect), coeffNorm,
+            out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
+        )
+        inputFeat_f[nBatch, :, :, nFeat // 2:] = np.divide(
+            np.imag(intensityVect), coeffNorm,
+            out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
+        )
 
     return inputFeat_f
 
@@ -73,8 +80,8 @@ def save_feature(filepath, savepath, mapping=None):
     # The neural network can only process buffers of 25 frames
     lBuffer = 25
     nBatch = 1
-    x_f = x_f[np.newaxis, :, :lBuffer,
-          :]  # First axis corresponding to the batches of 25 frames to process; here there's only 1
+    x_f = x_f[np.newaxis, :, :lBuffer, :]
+    # First axis corresponding to the batches of 25 frames to process; here there's only 1
 
     # Get the input feature for the neural network
     inputFeat_f = getNormalizedIntensity(x_f)
@@ -100,9 +107,9 @@ def main():
 
     ts = time()
     # Convert all houses
+    # # Create a pool to communicate with the worker threads
+    pool = Pool(processes=nthreads)
     try:
-        # # Create a pool to communicate with the worker threads
-        pool = Pool(processes=nthreads)
         for subdir, dirs, files in os.walk(audiodir):
             for f in files:
                 if f.endswith('.wav'):
