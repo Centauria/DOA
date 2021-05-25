@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 import argparse
 import os
+from functools import partial
 from multiprocessing import Pool
 from time import time
 
+import librosa
 import numpy as np
-from scipy.io.wavfile import read
-
-import dsp
 
 overlapping = 512
 chunk_size = 1024
@@ -43,11 +42,11 @@ def getNormalizedIntensity(x_f):
         # Normalize it in each TF bin
         coeffNorm = (abs(sig_f[0]) ** 2 + np.sum(abs(sig_f[1:]) ** 2 / 3, axis=0))[:, :, np.newaxis]
         inputFeat_f[nBatch, :, :, :nFeat // 2] = np.divide(
-            np.real(intensityVect), coeffNorm,
+            intensityVect.real, coeffNorm,
             out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
         )
         inputFeat_f[nBatch, :, :, nFeat // 2:] = np.divide(
-            np.imag(intensityVect), coeffNorm,
+            intensityVect.imag, coeffNorm,
             out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
         )
 
@@ -55,9 +54,10 @@ def getNormalizedIntensity(x_f):
 
 
 def save_feature(filepath, savepath, mapping=None):
-    fs, x = read(filepath)
+    x, fs = librosa.load(filepath, sr=None, mono=False)
+    # print(f'Loaded wave: {filepath}')
     assert fs == 16000
-    x = x.T
+
     if mapping is not None:
         newx = np.empty_like(x)
         mapping = np.insert(mapping, 0, 0)
@@ -69,23 +69,30 @@ def save_feature(filepath, savepath, mapping=None):
     # Compute the STFT
     nChannel, nSmp = x.shape
     lFrame = 1024  # size of the STFT window, in samples
-    nBand = lFrame // 2 + 1
     nOverlap = lFrame // 2
     hop = lFrame - nOverlap
-    lSentence = nSmp // hop
-    x_f = np.empty((nChannel, lSentence, nBand), dtype=complex)
-    for iChannel in range(nChannel):
-        x_f[iChannel] = dsp.stft(x[iChannel], lWindow=lFrame)
+
+    x_f = np.asarray(list(map(
+        partial(
+            librosa.stft,
+            n_fft=lFrame, hop_length=hop,
+            window=np.sin(np.arange(0.5, lFrame + 0.5) / lFrame * np.pi),
+            pad_mode='constant'
+        ), x
+    )))
+    x_f = x_f.swapaxes(1, 2)
 
     # The neural network can only process buffers of 25 frames
+    x_f = np.expand_dims(x_f, axis=0)
     lBuffer = 25
-    nBatch = 1
-    x_f = x_f[np.newaxis, :, :lBuffer, :]
-    # First axis corresponding to the batches of 25 frames to process; here there's only 1
+    splits = np.dsplit(x_f, range(lBuffer, x_f.shape[2], lBuffer))
+    splits[-1] = np.pad(splits[-1], ((0, 0), (0, 0), (0, lBuffer - splits[-1].shape[2]), (0, 0)), 'constant')
+    x_f = np.vstack(splits)
 
     # Get the input feature for the neural network
     inputFeat_f = getNormalizedIntensity(x_f)
     np.save(savepath, inputFeat_f)
+    print(f'Saved feature: {savepath}  dim={inputFeat_f.shape}')
 
 
 def main():
@@ -102,25 +109,27 @@ def main():
     nthreads = args.nthreads
     outpath = args.output
 
-    if not os.path.exists(outpath):
-        os.makedirs(outpath)
+    os.makedirs(outpath, exist_ok=True)
 
     ts = time()
     # Convert all houses
     # # Create a pool to communicate with the worker threads
-    pool = Pool(processes=nthreads)
-    try:
+    with Pool(nthreads) as pool:
         for subdir, dirs, files in os.walk(audiodir):
+            for d in dirs:
+                os.makedirs(os.path.join(outpath, subdir.replace(audiodir, '').lstrip('/'), d), exist_ok=True)
             for f in files:
                 if f.endswith('.wav'):
                     filename = os.path.join(subdir, f)
-                    savepath = os.path.join(outpath, f.replace('.wav', '.npy'))
+                    savepath = os.path.join(
+                        outpath,
+                        subdir.replace(audiodir, '').lstrip('/'),
+                        f.replace('.wav', '.npy')
+                    )
                     pool.apply_async(save_feature, args=(filename, savepath))
-    except Exception as e:
-        print(str(e))
         pool.close()
-    pool.close()
-    pool.join()
+        pool.join()
+
     print('Took {}'.format(time() - ts))
 
 
