@@ -5,11 +5,14 @@ import os
 import librosa
 import numpy as np
 import ruamel_yaml as yaml
-from torch.utils.data import Dataset
+import torch
+import torch.utils.data
+
+import util
 
 
-class GenDOA(Dataset):
-    def __init__(self, dataset_path, split='train', feature_path=None):
+class GenDOA(torch.utils.data.Dataset):
+    def __init__(self, dataset_path, split='train', feature_path=None, loss_type='cartesian'):
         self.__path = dataset_path
         self.__split = split
         meta_path = os.path.join(dataset_path, 'meta', split, 'records')
@@ -34,24 +37,34 @@ class GenDOA(Dataset):
             self.__room_path = room_path
         else:
             raise FileNotFoundError(f'Room folder {room_path} does not exist')
+        assert loss_type in ('categorical', 'cartesian', 'polar')
+        self.__loss_type = loss_type
 
     def __getitem__(self, item):
         name = self.indexes[item]
         if type(name) == list:
-            meta = []
-            feature = []
-            for n in name:
-                meta_filename = os.path.join(self.__meta_path, n + '.json')
-                with open(meta_filename) as f:
-                    meta.append(json.load(f))
-                feature.append(self.feature(n))
+            room = list(map(self.room, name))
+            if self.__loss_type == 'cartesian':
+                loc = list(map(lambda r: util.cartesian(r['mic_array_location'], r['sources_location']), room))
+            elif self.__loss_type == 'polar':
+                loc = list(map(lambda r: util.polar(r['mic_array_location'], r['sources_location']), room))
+            else:
+                raise ValueError(f'Loss type {self.__loss_type} not defined')
+            feature = list(map(self.feature, name))
             feature = np.concatenate(feature, axis=0)
         else:
-            meta_filename = os.path.join(self.__meta_path, name + '.json')
-            with open(meta_filename) as f:
-                meta = json.load(f)
+            room = self.room(name)
+            if self.__loss_type == 'cartesian':
+                loc = util.cartesian(room['mic_array_location'], room['sources_location'])
+            elif self.__loss_type == 'polar':
+                loc = util.polar(room['mic_array_location'], room['sources_location'])
+            else:
+                raise ValueError(f'Loss type {self.__loss_type} not defined')
             feature = self.feature(name)
-        return feature, meta
+        loc = torch.tensor(loc)
+        feature = torch.tensor(feature).permute(0, 3, 1, 2)
+        # TODO: 输出每一个时刻的DOA信息
+        return feature, loc
 
     def __len__(self):
         return len(self.indexes)
