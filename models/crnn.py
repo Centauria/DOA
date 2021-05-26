@@ -30,14 +30,35 @@ class CRNN(nn.Module):
         )
         self.rnn = nn.LSTM(128, 64, batch_first=True, bidirectional=True)
         self.fc = nn.Sequential(
-            nn.Linear(128, 429),
-            nn.Linear(429, 2)
+            nn.Linear(25 * 128, 429),
+            nn.ReLU(),
+            nn.Linear(429, 6 * 1)
+        )
+        self.prob = nn.Sequential(
+            nn.Linear(128, 256),
+            nn.ReLU(),
+            nn.Linear(256, 6),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
         # x: [batch, 25, 513, 6]
         x = self.cnn(x)
-        x = x.view(x.shape[0], -1, 128)
+        # x: [batch, 64, 25, 2]
+        x = x.transpose(1, 2)
+        x = x.flatten(start_dim=2)
+        # x: [batch, 25, 128]
+        x = x.transpose(0, 1)
         x, _ = self.rnn(x)
-        x = self.fc(x)
-        return x
+        # x: [25, batch, 128]
+        x = x.transpose(0, 1)
+
+        prob = self.prob(x)
+        # prob: [batch, 25, 6]
+        prob = prob.max(dim=1).values
+        # prob: [batch, 6]
+
+        coord = x.view(x.shape[0], -1)
+        coord = self.fc(coord)
+        # x: [batch, 6]
+        return coord, prob
