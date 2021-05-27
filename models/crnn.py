@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import torch
 import torch.nn as nn
 
 
@@ -29,36 +30,53 @@ class CRNN(nn.Module):
             CNN_block(64, 64, max_pool_size=(1, 4), padding=(1, 2)),
         )
         self.rnn = nn.LSTM(128, 64, batch_first=True, bidirectional=True)
-        self.fc = nn.Sequential(
-            nn.Linear(25 * 128, 429),
-            nn.ReLU(),
-            nn.Linear(429, 6 * 1)
-        )
         self.prob = nn.Sequential(
             nn.Linear(128, 256),
             nn.ReLU(),
             nn.Linear(256, 6),
             nn.Sigmoid()
         )
+        self.divide = nn.ModuleList([nn.Sequential(
+            CNN_block(1, 12, padding=(1, 1), max_pool_size=(1, 8)),
+            CNN_block(12, 6, padding=(1, 1), max_pool_size=(4, 4)),
+            CNN_block(6, 1, padding=(1, 1))
+        ) for i in range(6)])
+        self.output = nn.ModuleList([nn.Sequential(
+            nn.Linear(24, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1)
+        ) for i in range(6)])
 
     def forward(self, x):
         # x: [batch, 25, 513, 6]
         x = self.cnn(x)
         # x: [batch, 64, 25, 2]
-        x = x.transpose(1, 2)
+        x.transpose_(1, 2)
         x = x.flatten(start_dim=2)
         # x: [batch, 25, 128]
-        x = x.transpose(0, 1)
+        x.transpose_(0, 1)
         x, _ = self.rnn(x)
         # x: [25, batch, 128]
-        x = x.transpose(0, 1)
+        x.transpose_(0, 1)
+        # x: [batch, 25, 128]
 
         prob = self.prob(x)
         # prob: [batch, 25, 6]
         prob = prob.max(dim=1).values
         # prob: [batch, 6]
 
-        coord = x.view(x.shape[0], -1)
-        coord = self.fc(coord)
-        # x: [batch, 6]
+        x.unsqueeze_(1)
+        # x: [batch, 1, 25, 128]
+        coords = list(map(lambda m: m(x), self.divide))
+        # coords : 6 * [batch, 1, 6, 4]
+        for i in range(6):
+            coords[i] = coords[i].flatten(start_dim=2)
+            coords[i].squeeze_(1)
+        # coords : 6 * [batch, 24]
+        coords = list(map(lambda i: self.output[i](coords[i]), range(6)))
+        # coords : 6 * [batch, 1, 1]
+        coord = torch.cat(coords, dim=1)
+        # coord: [batch, 6, 1]
+        coord.squeeze_(-1)
+        # coord: [batch, 6]
         return coord, prob
