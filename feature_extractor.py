@@ -13,48 +13,8 @@ chunk_size = 1024
 num_frames = 25
 
 
-def getNormalizedIntensity(x_f):
-    """
-    Compute the input feature needed by the localization neural network.
-
-    Parameters
-    ----------
-    x_f: nd-array
-        STFT of the HOA signal.
-        Shape: (nBatch, nChannel, lSentence, nBand)
-
-    Returns
-    -------
-    inputFeat_f: nd-array
-        Shape: (nBatch, lSentence, nBand, nFeat)
-    """
-    (lBatch, nChannel, lSentence, nBand) = x_f.shape
-    nFeat = 6
-    inputFeat_f = np.empty((lBatch, lSentence, nBand, nFeat), dtype=np.float32)
-
-    for nBatch, sig_f in enumerate(x_f):  # Process all examples in the batch
-        # Compute the intensity vector in each TF bin
-        intensityVect = np.empty((lSentence, nBand, 3), dtype=complex)
-        intensityVect[:, :, 0] = sig_f[0].conj() * sig_f[1]
-        intensityVect[:, :, 1] = sig_f[0].conj() * sig_f[2]
-        intensityVect[:, :, 2] = sig_f[0].conj() * sig_f[3]
-
-        # Normalize it in each TF bin
-        coeffNorm = (abs(sig_f[0]) ** 2 + np.sum(abs(sig_f[1:]) ** 2 / 3, axis=0))[:, :, np.newaxis]
-        inputFeat_f[nBatch, :, :, :nFeat // 2] = np.divide(
-            intensityVect.real, coeffNorm,
-            out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
-        )
-        inputFeat_f[nBatch, :, :, nFeat // 2:] = np.divide(
-            intensityVect.imag, coeffNorm,
-            out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
-        )
-
-    return inputFeat_f
-
-
-def save_feature(filepath, savepath, mapping=None):
-    x, fs = librosa.load(filepath, sr=None, mono=False)
+def get_feature_stft(filename, mapping=None):
+    x, fs = librosa.load(filename, sr=None, mono=False)
     assert fs == 16000
 
     if mapping is not None:
@@ -66,9 +26,8 @@ def save_feature(filepath, savepath, mapping=None):
         x = newx
 
     # Compute the STFT
-    nChannel, nSmp = x.shape
-    lFrame = 1024  # size of the STFT window, in samples
-    nOverlap = lFrame // 2
+    lFrame = chunk_size  # size of the STFT window, in samples
+    nOverlap = overlapping
     hop = lFrame - nOverlap
 
     x_f = np.asarray(list(map(
@@ -83,25 +42,70 @@ def save_feature(filepath, savepath, mapping=None):
 
     # The neural network can only process buffers of 25 frames
     x_f = np.expand_dims(x_f, axis=0)
-    lBuffer = 25
+    lBuffer = num_frames
     splits = np.dsplit(x_f, range(lBuffer, x_f.shape[2], lBuffer))
     splits[-1] = np.pad(splits[-1], ((0, 0), (0, 0), (0, lBuffer - splits[-1].shape[2]), (0, 0)), 'constant')
     x_f = np.vstack(splits)
+    return x_f
 
-    # Get the input feature for the neural network
-    inputFeat_f = getNormalizedIntensity(x_f)
-    np.save(savepath, inputFeat_f)
-    print(f'Saved feature: {savepath}  dim={inputFeat_f.shape}')
+
+def get_feature_intensity(filename):
+    x_f = get_feature_stft(filename, mapping=None)
+    (lBatch, nChannel, lSentence, nBand) = x_f.shape
+    nFeat = 10
+    h_nFeat = nFeat // 2
+    inputFeat_f = np.empty((lBatch, lSentence, nBand, nFeat), dtype=np.float32)
+
+    for nBatch, sig_f in enumerate(x_f):  # Process all examples in the batch
+        # Compute the intensity vector in each TF bin
+        f0_conj = sig_f[0].conj()
+        intensityVect = np.transpose(f0_conj * sig_f[1:], (1, 2, 0))
+
+        # Normalize it in each TF bin
+        coeffNorm = (np.abs(sig_f[0]) ** 2 + np.sum(np.abs(sig_f[1:]) ** 2 / h_nFeat, axis=0))[:, :, np.newaxis]
+        inputFeat_f[nBatch, :, :, :h_nFeat] = np.divide(
+            intensityVect.real, coeffNorm,
+            out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
+        )
+        inputFeat_f[nBatch, :, :, h_nFeat:] = np.divide(
+            intensityVect.imag, coeffNorm,
+            out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
+        )
+
+    return inputFeat_f
+
+
+def get_feature_lps(filename):
+    x_f = get_feature_stft(filename, mapping=None)
+    lps = 20 * np.log10(x_f, where=(x_f > 0), out=-5 * np.ones_like(x_f, dtype=float))
+    return lps
+
+
+def save_feature(filepath, savepath, method='stft', mapping=None):
+    if method == 'stft':
+        feature = get_feature_stft(filepath, mapping=mapping)
+    elif method == 'intensity':
+        feature = get_feature_intensity(filepath)
+    elif method == 'lps':
+        feature = get_feature_lps(filepath)
+    else:
+        raise ValueError('method must be in [stft, intensity, lps]')
+
+    np.save(savepath, feature)
+    print(f'Saved feature: {savepath}  dim={feature.shape}')
 
 
 def main():
     parser = argparse.ArgumentParser(prog='feature_extractor',
                                      description="""Script to convert ambisonic audio to intensity vectors""")
-    parser.add_argument("--audiodir", "-d", help="Directory where audio files are located",
-                        type=str, required=True)
-    parser.add_argument("--output", "-o", help="Directory where feature files are written to",
-                        type=str, required=True)
-    parser.add_argument("--nthreads", "-n", type=int, default=1, help="Number of threads to use")
+    parser.add_argument('--feature-type', '-f', type=str, required=True, choices=('stft', 'intensity', 'lps'),
+                        help='Type of feature')
+    parser.add_argument('--audiodir', '-d', type=str, required=True,
+                        help='Directory where audio files are located')
+    parser.add_argument('--output', '-o', type=str, required=True,
+                        help='Directory where feature files are written to')
+    parser.add_argument('--nthreads', '-n', type=int, default=1,
+                        help='Number of threads to use')
 
     args = parser.parse_args()
     audiodir = args.audiodir
@@ -125,11 +129,14 @@ def main():
                         subdir.replace(audiodir, '').lstrip('/'),
                         f.replace('.wav', '.npy')
                     )
-                    pool.apply_async(save_feature, args=(filename, savepath))
+                    pool.apply_async(
+                        partial(save_feature, method=args.feature_type),
+                        args=(filename, savepath)
+                    )
         pool.close()
         pool.join()
 
-    print('Took {}'.format(time() - ts))
+    print('Took {} seconds.'.format(time() - ts))
 
 
 if __name__ == "__main__":
