@@ -23,6 +23,7 @@ plt.switch_backend('agg')
 seed = np.random.randint(0, 1000)
 np.random.seed(seed)
 torch.random.manual_seed(seed)
+torch.cuda.manual_seed(seed)
 
 
 def train():
@@ -48,6 +49,7 @@ def train():
 
     # read data
     # feature shape:(nBatch, nchunk, 25, 513, 6)
+    # loc shape:(nBatch, nchunk, 6)
     train_data = GenDOA(args.datasets, loss_type=args.loss)  # 返回feature, loc  loc->azimuth
     train_data_entries, val_data_entries = train_test_split(train_data, test_size=0.3, random_state=11)
     train_loader = torch.utils.data.DataLoader(train_data_entries, batch_size=batchsize, shuffle=True, drop_last=True)
@@ -70,20 +72,31 @@ def train():
 
         # data entries
         # feature shape:(nBatch, 1, 25, 513, 6)
-        for i in range(train_loader[0].shape[1]):
-            train_feature = train_loader[0][:, i, :, :, :]
-            train_label = train_loader[1][:, i, :]
+        feature_train, loc_train = train_loader
+        feature_val, loc_val = val_loader
+        for iChunk in range(feature_train.shape[1]):
+            train_feature = feature_train[:, iChunk, :, :, :]
+            train_label = loc_train[:, iChunk, :]
             # label!=0, set prob=1
             # label=0, set prob=0
             prob_train_label = torch.empty(train_label.shape)
-
-            val_feature = val_loader[0][:, i, :, :, :]
-            val_label = val_loader[1][:, i, :]
+            for i in range(6):
+                if train_label[:, iChunk, i] != 0:
+                    prob_train_label[:, iChunk, i] = 1
+                else:
+                    prob_train_label[:, iChunk, i] = 0
+            val_feature = feature_val[:, iChunk, :, :, :]
+            val_label = loc_val[:, iChunk, :]
             prob_val_label = torch.empty(val_label.shape)
+            for i in range(6):
+                if prob_val_label[:, iChunk, i] != 0:
+                    prob_val_label[:, iChunk, i] = 1
+                else:
+                    prob_val_label[:, iChunk, i] = 0
 
             train_feature, train_label, val_feature, val_label = Variable(train_feature), Variable(train_label), \
                                                                  Variable(val_feature), Variable(val_label)
-
+            prob_train_label, prob_val_label = Variable(prob_train_label), Variable(prob_val_label)
 
             # forward, backward, update weights
             optimizer.zero_grad()
