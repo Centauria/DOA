@@ -45,7 +45,7 @@ class GenDOA(torch.utils.data.Dataset):
         self.__pad_strategy = pad_strategy
         self.indexes = IntervalTree()
         n = 0
-        for name in tqdm(self.file_indexes):
+        for name in tqdm(self.file_indexes, leave=True):
             slices, _ = self.slice_tracks(name)
             s_num = len(slices)
             self.indexes[n:n + s_num] = name
@@ -53,20 +53,21 @@ class GenDOA(torch.utils.data.Dataset):
 
     def __getitem__(self, item):
         index = sorted(self.indexes[item])
-        if isinstance(item, slice):
+        if isinstance(item, int):
+            itv = index[0]
+            feature, loc, prob = self.get(itv.data, item - itv.begin)
+            feature = torch.tensor(feature).permute(2, 0, 1)
+        elif isinstance(item, slice):
             start, stop, step = item.indices(len(self))
             item = range(start, stop, step)
             item_info = map(lambda i: next(filter(lambda x: x.begin <= i < x.end, index)), item)
             item_info = map(lambda x: (x[0].data, x[1] - x[0].begin), zip(item_info, item))
-        elif isinstance(item, int):
-            itv = index[0]
-            item_info = [(itv.data, item - itv.begin)]
+            feature, loc, prob = list(zip(*map(lambda x: self.get(*x), item_info)))
+            loc = torch.stack(loc)
+            prob = torch.stack(prob)
+            feature = torch.tensor(feature).permute(0, 3, 1, 2)
         else:
             raise ValueError('Index must be int or slice')
-        feature, loc, prob = list(zip(*map(lambda x: self.get(*x), item_info)))
-        loc = torch.stack(loc)
-        prob = torch.stack(prob)
-        feature = torch.tensor(feature).permute(0, 3, 1, 2)
         return feature, loc, prob
 
     def __len__(self):
