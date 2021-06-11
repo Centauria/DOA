@@ -29,40 +29,6 @@ torch.random.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
 
-def PIT_loss(doa, target, n, train_label, prob_train_label):
-    """
-    compute PIT_loss = min_{A(6. n)}(MSE + alpha*CE)
-    :param doa: (nBatch, 6)  predict DOA of speakers # (x1, x2, x3, x4, x5, x6)
-    :param target: (nBatch, 6)  predict prob of speakers # (0, 0, 1, 0, 1, 1)
-    :param n: number of true speakers
-    :param train_label: true DOA of speakers, to compute MSE(doa, train_label)  train_label:(nBatch, 6)——>（nBatch, count ,6）
-    :param prob_train_label: true prob of speakers, to compute CE(target, prob_train_label)  prob_train_label: (nBatch, 6)——>（nBatch, count ,6）
-    :return: loss  float
-    """
-    alpha =
-    loss = []
-    if doa.shape[0] == target.shape[0]:
-        nBatch = doa.shape[0]
-
-    count = int(perm(6, n))
-    true_doa = torch.empty((nBatch, count, 6))
-    for iBatch in range(nBatch):
-        for cnt in range(count):
-            for p in permutations(doa[iBatch], n):
-                p = torch.tensor(list(p)) # p: one sequence in A(6,n), len(p)=n
-                for i, prob in enumerate(target):
-                    index = 0  # true_doa_index in p, default max_index=n?
-                    if prob != 0:  # ==1?
-                        true_doa[iBatch][cnt][i] = p[index]
-                        index += 1
-                    else:
-                        true_doa[iBatch][cnt][i] = 0
-
-
-
-
-
-
 def train():
     parser = argparse.ArgumentParser(prog='train', description="""Script to train a DOA estimator""")
     parser.add_argument("--datasets", "-d", required=True, help="Directory where datasets are", type=str)
