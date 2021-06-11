@@ -73,9 +73,9 @@ def train():
         scheduler.step()
 
         # batch data entries
-        # feature shape:(n, batchsize, 6, 25, 513)?增加一个维度？n=batch/batchsize？
-        # loc shape:(n, nBatch, 6)
-        # prob shape:(n, nBatch, 6)
+        # feature shape:(nBatch, 6, 25, 513)
+        # loc shape:(nBatch, 6)
+        # prob shape:(nBatch, 6)
         for i, train_data in enumerate(train_loader):
             feature, loc, prob = train_data
             # feature: (batchsize, 6, 25, 513)
@@ -87,10 +87,10 @@ def train():
             optimizer.zero_grad()
             predictions = crnn(feature)
             doa, target = zip(*predictions)
-            doa_loss = Divide_criterion(doa, loc)
-            target_loss = Prob_criterion(target, prob)
+            # doa_loss = Divide_criterion(doa, loc)
+            # target_loss = Prob_criterion(target, prob)
             # compute loss
-            loss = doa_loss + target_loss
+            # loss = doa_loss + target_loss
 
             # PIT loss
             # get PIT doa, target
@@ -100,8 +100,13 @@ def train():
                 nBatch = doa.shape[0]
             active_speakers_number = (target==1).sum(dim=1)  # active number of each batch  [nBatch]
             count = int(perm(6, active_speakers_number))
-            pad_doa = torch.repeat_interleave(doa.unsqueeze(dim=1), repeats=count, dim=1) # [nBatch, count, 6]
-            true_doa = torch.empty((nBatch, count, 6))
+            pad_loc = torch.repeat_interleave(loc.unsqueeze(dim=1), repeats=count, dim=1)  # [nBatch, count, 6]
+            pad_prob = torch.repeat_interleave(prob.unsqueeza(dim=1), repeats=count, dim=1)  # [nBatch, count, 6]
+            true_active_doa = torch.empty((nBatch, count, 6))  # [nBatch, count, 6]
+            true_active_target = torch.repeat_interleave(target.unsqueeza(dim=1), repeats=count, dim=1)  # [nBatch, count, 6]
+
+            pit_doa_loss = torch.empty((nBatch, count))
+            pit_target_loss = torch.empty((nBatch, count))
             for iBatch in range(nBatch):
                 for cnt in range(count):
                     for p in permutations(doa[iBatch], active_speakers_number):
@@ -111,21 +116,26 @@ def train():
                             index = 0
                             if probility == 1:
                                 # fill (target != 0) with sequence in permutations
-                                true_doa[iBatch][cnt][i] = p[index]
+                                true_active_doa[iBatch][cnt][i] = p[index]
                                 index += 1
                             else:
-                                true_doa[iBatch][cnt][i] = 0
-            # pad_doa vs true_doa
+                                true_active_doa[iBatch][cnt][i] = 0
+                    pit_doa_loss[iBatch][cnt] = Divide_criterion(true_active_doa[iBatch][cnt], pad_loc[iBatch][cnt])
+                    pit_target_loss[iBatch][cnt] = Prob_criterion(true_active_target[iBatch][cnt], pad_prob[iBatch][cnt])
+            pit_loss = torch.add(pit_doa_loss, pit_target_loss)  # [nBatch, count], todo: Adjust alpha
+            pit_index = torch.argmin(pit_loss, 1)  # [nBatch]
+            pred_doa = torch.empty((nBatch, 6))  # choose one sequence according to pit_index
+            for iBatch in range(nBatch):
+                pred_doa[iBatch] = true_active_doa[iBatch][pit_index[iBatch]]
 
-
-
-
+            loss = Divide_criterion(pred_doa, loc) + Prob_criterion(target, prob)  # adjust alpha
 
             loss.backward()
             optimizer.step()
 
+    # print loss
 
-
+    # valid
 
 if __name__ == "__main__":
     train()
