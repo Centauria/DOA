@@ -19,7 +19,7 @@ from dataset import GenDOA
 from models.crnn import CRNN
 
 from itertools import permutations
-from scipy.special import comb,perm
+from scipy.special import perm
 
 plt.switch_backend('agg')
 
@@ -84,10 +84,11 @@ def train():
         os.makedirs(outpath)
     savepath = os.path.join(outpath, 'best_model.{epoch:02d}-{val_loss:.6f}.h5')
 
-    # read data
-    # feature shape:(nBatch, nchunk, 25, 513, 6)
-    # loc shape:(nBatch, nchunk, 6)
-    train_data = GenDOA(args.datasets, loss_type=args.loss)  # feature, loc
+    # read data input
+    # feature shape:(Batch, 6, 25, 513)
+    # loc shape:(Batch, 6)
+    # prob shape :(Batch, 6)
+    train_data = GenDOA(args.datasets, loss_type=args.loss)  # feature, loc, prob
     train_data_entries, val_data_entries = train_test_split(train_data, test_size=0.3, random_state=11)
     train_loader = torch.utils.data.DataLoader(train_data_entries, batch_size=batchsize, shuffle=True, drop_last=True)
     val_loader = torch.utils.data.DataLoader(val_data_entries, batch_size=batchsize, shuffle=True, drop_last=True)
@@ -105,43 +106,54 @@ def train():
     for epoch in range(epochs):
         scheduler.step()
 
-        # data entries
-        # feature shape:(nBatch, 1, 25, 513, 6)
-        # loc shape:(nBatch, 1, 6)
-        feature_train, loc_train = train_loader
-        feature_val, loc_val = val_loader
-        for iChunk in range(feature_train.shape[1]):
-            train_feature = feature_train[:, iChunk, :, :, :]
-            train_label = loc_train[:, iChunk, :]
-            # label!=0, set prob=1
-            # label=0, set prob=0
-            prob_train_label = torch.empty(train_label.shape)
-            for i in range(6):
-                if train_label[:, iChunk, i] != 0:
-                    prob_train_label[:, iChunk, i] = 1
-                else:
-                    prob_train_label[:, iChunk, i] = 0
-            val_feature = feature_val[:, iChunk, :, :, :]
-            val_label = loc_val[:, iChunk, :]
-            prob_val_label = torch.empty(val_label.shape)
-            for i in range(6):
-                if prob_val_label[:, iChunk, i] != 0:
-                    prob_val_label[:, iChunk, i] = 1
-                else:
-                    prob_val_label[:, iChunk, i] = 0
-
-            train_feature, train_label, val_feature, val_label = Variable(train_feature), Variable(train_label), \
-                                                                 Variable(val_feature), Variable(val_label)
-            prob_train_label, prob_val_label = Variable(prob_train_label), Variable(prob_val_label)
+        # batch data entries
+        # feature shape:(n, batchsize, 6, 25, 513)?增加一个维度？n=batch/batchsize？
+        # loc shape:(n, nBatch, 6)
+        # prob shape:(n, nBatch, 6)
+        for i, train_data in enumerate(train_loader):
+            feature, loc, prob = train_data
+            # feature: (batchsize, 6, 25, 513)
+            # loc: (batchsize, 6)
+            # prob: (batchsize, 6)
+            feature, loc, prob = Variable(feature), Variable(loc), Variable(prob)
 
             # forward, backward, update weights
             optimizer.zero_grad()
-            predictions = crnn(train_feature)
-            coord, prob = zip(*predictions)
-            doa_loss = Divide_criterion(coord, train_label)
-            target_loss = Prob_criterion(prob, prob_train_label)
+            predictions = crnn(feature)
+            doa, target = zip(*predictions)
+            doa_loss = Divide_criterion(doa, loc)
+            target_loss = Prob_criterion(target, prob)
             # compute loss
-            loss =
+            loss = doa_loss + target_loss
+
+            # PIT loss
+            # get PIT doa, target
+            # doa: predict doa of speakers  [nBatch, 6]
+            # target: predict prob of speakers  [nBatch, 6]
+            if doa.shape[0] == target.shape[0]:
+                nBatch = doa.shape[0]
+            active_speakers_number = (target==1).sum(dim=1)  # active number of each batch  [nBatch]
+            count = int(perm(6, active_speakers_number))
+            pad_doa = torch.repeat_interleave(doa.unsqueeze(dim=1), repeats=count, dim=1) # [nBatch, count, 6]
+            true_doa = torch.empty((nBatch, count, 6))
+            for iBatch in range(nBatch):
+                for cnt in range(count):
+                    for p in permutations(doa[iBatch], active_speakers_number):
+                        p = torch.tensor(list(p))
+                        # p: one sequence in A(6, n), len(p)=n
+                        for i, probility in enumerate(target):
+                            index = 0
+                            if probility == 1:
+                                # fill (target != 0) with sequence in permutations
+                                true_doa[iBatch][cnt][i] = p[index]
+                                index += 1
+                            else:
+                                true_doa[iBatch][cnt][i] = 0
+            # pad_doa vs true_doa
+
+
+
+
 
             loss.backward()
             optimizer.step()
