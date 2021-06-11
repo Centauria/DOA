@@ -18,11 +18,15 @@ import matplotlib.pyplot as plt
 from dataset import GenDOA
 from models.crnn import CRNN
 
+from itertools import permutations
+from scipy.special import perm
+
 plt.switch_backend('agg')
 
 seed = np.random.randint(0, 1000)
 np.random.seed(seed)
 torch.random.manual_seed(seed)
+torch.cuda.manual_seed(seed)
 
 
 def train():
@@ -31,7 +35,7 @@ def train():
     parser.add_argument("--outputs", "-o", required=True, help="Directory to write results", type=str)
     parser.add_argument("--batchsize", "-b", type=int, default=256, help="Choose a batchsize")
     parser.add_argument("--epochs", "-e", type=int, default=50, help="Number of epochs")
-    parser.add_argument("--loss", "-lo", type=str, choices=["cartesian", "categorical", "polar"], required=True,
+    parser.add_argument("--loss", "-lo", type=str, choices=["cartesian", "polar"], required=True,
                         help="Choose loss representation")
 
     args = parser.parse_args()
@@ -46,9 +50,11 @@ def train():
         os.makedirs(outpath)
     savepath = os.path.join(outpath, 'best_model.{epoch:02d}-{val_loss:.6f}.h5')
 
-    # read data
-    # feature shape:(nBatch, nchunk, 25, 513, 6)
-    train_data = GenDOA(args.datasets, loss_type=args.loss)  # 返回feature, loc  loc->azimuth
+    # read data input
+    # feature shape:(Batch, 6, 25, 513)
+    # loc shape:(Batch, 6)
+    # prob shape :(Batch, 6)
+    train_data = GenDOA(args.datasets, loss_type=args.loss)  # feature, loc, prob
     train_data_entries, val_data_entries = train_test_split(train_data, test_size=0.3, random_state=11)
     train_loader = torch.utils.data.DataLoader(train_data_entries, batch_size=batchsize, shuffle=True, drop_last=True)
     val_loader = torch.utils.data.DataLoader(val_data_entries, batch_size=batchsize, shuffle=True, drop_last=True)
@@ -57,42 +63,63 @@ def train():
     crnn = CRNN()
 
     # scheduler
-    Divide_criterion = nn.L1Loss(reduction='sum')
+    Divide_criterion = nn.MSEloss(reduction='mean')
     Prob_criterion = nn.BCEloss(weight=None, size_average=None, reduce=None, reduction='mean')
     optimizer = torch.optim.Adam(params=crnn.parameters(), lr=1e-4, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # train
     for epoch in range(epochs):
-        loss1 = 0.0
-        loss2 = 0.0
         scheduler.step()
 
-        # data entries
-        # feature shape:(nBatch, 1, 25, 513, 6)
-        for i in range(train_loader[0].shape[1]):
-            train_feature = train_loader[0][:, i, :, :, :]
-            train_label = train_loader[1][:, i, :]
-            # label!=0, set prob=1
-            # label=0, set prob=0
-            prob_train_label = torch.empty(train_label.shape)
-
-            val_feature = val_loader[0][:, i, :, :, :]
-            val_label = val_loader[1][:, i, :]
-            prob_val_label = torch.empty(val_label.shape)
-
-            train_feature, train_label, val_feature, val_label = Variable(train_feature), Variable(train_label), \
-                                                                 Variable(val_feature), Variable(val_label)
-
+        # batch data entries
+        # feature shape:(n, batchsize, 6, 25, 513)?增加一个维度？n=batch/batchsize？
+        # loc shape:(n, nBatch, 6)
+        # prob shape:(n, nBatch, 6)
+        for i, train_data in enumerate(train_loader):
+            feature, loc, prob = train_data
+            # feature: (batchsize, 6, 25, 513)
+            # loc: (batchsize, 6)
+            # prob: (batchsize, 6)
+            feature, loc, prob = Variable(feature), Variable(loc), Variable(prob)
 
             # forward, backward, update weights
             optimizer.zero_grad()
-            predictions = crnn(train_feature)
-            coords, prob = zip(*predictions)
-            loss1 = Divide_criterion(coords, train_label)
-            loss2 = Prob_criterion(prob, prob_train_label)
+            predictions = crnn(feature)
+            doa, target = zip(*predictions)
+            doa_loss = Divide_criterion(doa, loc)
+            target_loss = Prob_criterion(target, prob)
             # compute loss
-            loss =
+            loss = doa_loss + target_loss
+
+            # PIT loss
+            # get PIT doa, target
+            # doa: predict doa of speakers  [nBatch, 6]
+            # target: predict prob of speakers  [nBatch, 6]
+            if doa.shape[0] == target.shape[0]:
+                nBatch = doa.shape[0]
+            active_speakers_number = (target==1).sum(dim=1)  # active number of each batch  [nBatch]
+            count = int(perm(6, active_speakers_number))
+            pad_doa = torch.repeat_interleave(doa.unsqueeze(dim=1), repeats=count, dim=1) # [nBatch, count, 6]
+            true_doa = torch.empty((nBatch, count, 6))
+            for iBatch in range(nBatch):
+                for cnt in range(count):
+                    for p in permutations(doa[iBatch], active_speakers_number):
+                        p = torch.tensor(list(p))
+                        # p: one sequence in A(6, n), len(p)=n
+                        for i, probility in enumerate(target):
+                            index = 0
+                            if probility == 1:
+                                # fill (target != 0) with sequence in permutations
+                                true_doa[iBatch][cnt][i] = p[index]
+                                index += 1
+                            else:
+                                true_doa[iBatch][cnt][i] = 0
+            # pad_doa vs true_doa
+
+
+
+
 
             loss.backward()
             optimizer.step()
