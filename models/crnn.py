@@ -51,13 +51,13 @@ class CRNN(nn.Module):
         # x: [batch, 25, 513, 6]
         x = self.cnn(x)
         # x: [batch, 64, 25, 2]
-        x.transpose_(1, 2)
+        x = x.transpose(1, 2)
         x = x.flatten(start_dim=2)
         # x: [batch, 25, 128]
-        x.transpose_(0, 1)
+        x = x.transpose(0, 1)
         x, _ = self.rnn(x)
         # x: [25, batch, 128]
-        x.transpose_(0, 1)
+        x = x.transpose(0, 1)
         # x: [batch, 25, 128]
 
         prob = self.prob(x)
@@ -65,7 +65,7 @@ class CRNN(nn.Module):
         prob = prob.max(dim=1).values
         # prob: [batch, 6]
 
-        x.unsqueeze_(1)
+        x = x.unsqueeze(1)
         # x: [batch, 1, 25, 128]
         coords = list(map(lambda m: m(x), self.divide))
         # coords : 6 * [batch, 1, 6, 4]
