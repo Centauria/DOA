@@ -63,7 +63,7 @@ def train():
     crnn = CRNN()
 
     # scheduler
-    Divide_criterion = nn.MSEloss(reduction='mean')
+    Divide_criterion = nn.MSELoss(reduction='mean')
     Prob_criterion = nn.BCEloss(weight=None, size_average=None, reduce=None, reduction='mean')
     optimizer = torch.optim.Adam(params=crnn.parameters(), lr=1e-4, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
@@ -99,36 +99,37 @@ def train():
             if doa.shape[0] == target.shape[0]:
                 nBatch = doa.shape[0]
             active_speakers_number = (target==1).sum(dim=1)  # active number of each batch  [nBatch]
-            count = int(perm(6, active_speakers_number))
-            pad_loc = torch.repeat_interleave(loc.unsqueeze(dim=1), repeats=count, dim=1)  # [nBatch, count, 6]
-            pad_prob = torch.repeat_interleave(prob.unsqueeza(dim=1), repeats=count, dim=1)  # [nBatch, count, 6]
-            true_active_doa = torch.empty((nBatch, count, 6))  # [nBatch, count, 6]
-            true_active_target = torch.repeat_interleave(target.unsqueeza(dim=1), repeats=count, dim=1)  # [nBatch, count, 6]
-
-            pit_doa_loss = torch.empty((nBatch, count))
-            pit_target_loss = torch.empty((nBatch, count))
+            count = perm(6, active_speakers_number)  # [nBatch]
+            active_doa = torch.empty((nBatch, 6))
             for iBatch in range(nBatch):
-                for cnt in range(count):
-                    for p in permutations(doa[iBatch], active_speakers_number):
-                        p = torch.tensor(list(p))
-                        # p: one sequence in A(6, n), len(p)=n
-                        for i, probility in enumerate(target):
-                            index = 0
-                            if probility == 1:
-                                # fill (target != 0) with sequence in permutations
-                                true_active_doa[iBatch][cnt][i] = p[index]
-                                index += 1
-                            else:
-                                true_active_doa[iBatch][cnt][i] = 0
-                    pit_doa_loss[iBatch][cnt] = Divide_criterion(true_active_doa[iBatch][cnt], pad_loc[iBatch][cnt])
-                    pit_target_loss[iBatch][cnt] = Prob_criterion(true_active_target[iBatch][cnt], pad_prob[iBatch][cnt])
-            pit_loss = torch.add(pit_doa_loss, pit_target_loss)  # [nBatch, count], todo: Adjust alpha
-            pit_index = torch.argmin(pit_loss, 1)  # [nBatch]
-            pred_doa = torch.empty((nBatch, 6))  # choose one sequence according to pit_index
-            for iBatch in range(nBatch):
-                pred_doa[iBatch] = true_active_doa[iBatch][pit_index[iBatch]]
+                cnt = int(count[iBatch])  # int(A(6, n))
+                pad_loc = torch.repeat_interleave(loc[iBatch].unsqueeze(dim=0), repeats=cnt, dim=0)  # [cnt, 6]
+                pad_prob = torch.repeat_interleave(prob[iBatch].unsqueeze(dim=0), repeats=cnt, dim=0)  # [cnt, 6]
+                true_active_doa = torch.empty((cnt, 6))  # [cnt, 6]
+                true_active_target = torch.repeat_interleave(target[iBatch].unsqueeze(dim=0), repeats=cnt, dim=0)  # [cnt, 6]
+                pit_doa_loss = []
+                pit_target_loss = []
+                ip = 0
+                for p in permutations(doa[iBatch], int(active_speakers_number[iBatch])):  # A(6,active_speakers_number[iBatch]){doa[iBatch]}=cnt
+                    p = torch.tensor(list(p))  # p:one sequence in A(6, n), len(p)=n
+                    for i, probility in enumerate(target[iBatch]):
+                        index = 0
+                        if probility == 1:  # fill (target != 0) with sequence in permutations
+                            true_active_doa[ip][i] = p[index]
+                        else:
+                            true_active_doa[ip][i] = 0
+                    pit_doa = Divide_criterion(Variable(true_active_doa[ip]).float(), Variable(pad_loc[ip]).float())
+                    pit_target = Prob_criterion(Variable(true_active_target[ip]).float(), Variable(pad_prob[ip]).float())
+                    pit_doa_loss.append(pit_doa)  # list
+                    pit_target_loss.append(pit_target)   # len(pit_target_loss)=len(pit_doa_loss)=cnt
+                    ip += 1
+                pit_loss = torch.add(torch.tensor(pit_doa_loss), torch.tensor(pit_target_loss))   # tensorlenth(pit_loss)=cnt for iBatch
+                pit_index = torch.argmin(pit_loss)  # active_doa index for  iBatch
+                active_doa[iBatch] = true_active_doa[pit_index]
 
-            loss = Divide_criterion(pred_doa, loc) + Prob_criterion(target, prob)  # adjust alpha
+            loss1 = Divide_criterion(Variable(active_doa).float(), Variable(loc).float())
+            loss2 = Prob_criterion(Variable(target).float(), Variable(prob).float())
+            loss = torch.add(loss1, loss2)  # adjust alpha
 
             loss.backward()
             optimizer.step()
@@ -136,6 +137,7 @@ def train():
     # print loss
 
     # valid
+
 
 if __name__ == "__main__":
     train()
