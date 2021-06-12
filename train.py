@@ -1,18 +1,15 @@
 # _*_ coding: UTF-8 _*_
-import time
+
 import argparse
 import torch
 import torch.nn as nn
 import torch.optim
 import torch.utils.data
-import torch.distributed as dist
 from torch.autograd import Variable
 from datetime import datetime
 
 import os
 import numpy as np
-from tqdm import tqdm
-from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 
 from dataset import GenDOA
