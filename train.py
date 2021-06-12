@@ -193,5 +193,6 @@ def train():
         print(str(datetime.datetime.now() + datetime.timedelta(hours=8)) + ': ')
         print(log_string)
 
+
 if __name__ == "__main__":
     train()
