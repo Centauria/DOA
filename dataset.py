@@ -14,7 +14,8 @@ import util
 
 
 class GenDOA(torch.utils.data.Dataset):
-    def __init__(self, dataset_path, split='train', feature_path=None, loss_type='xpolar', pad_strategy='zero'):
+    def __init__(self, dataset_path, split='train', feature_path=None,
+                 loss_type='xpolar', pad_strategy='zero', freeze=True):
         self.__path = dataset_path
         self.__split = split
         meta_path = os.path.join(dataset_path, 'meta', split, 'records')
@@ -50,19 +51,60 @@ class GenDOA(torch.utils.data.Dataset):
             s_num = len(slices)
             self.indexes[n:n + s_num] = name
             n += s_num
+        self.__freeze = freeze
+        if freeze:
+            self.__feature_slices_path = os.path.join(feature_path, '.sliced')
+            os.makedirs(self.__feature_slices_path, exist_ok=True)
+            self.__saved_feature_slices = list(map(
+                lambda x: x.replace('.npy', ''),
+                os.listdir(self.__feature_slices_path)
+            ))
 
     def __getitem__(self, item):
         index = sorted(self.indexes[item])
         if isinstance(item, int):
             itv = index[0]
-            feature, loc, prob = self.get(itv.data, item - itv.begin)
+            if self.__freeze:
+                frozen_file = os.path.join(self.__feature_slices_path, f'{item}.npz')
+                if str(item) in self.__saved_feature_slices:
+                    data = np.load(frozen_file)
+                    feature, loc, prob = data['feature'], data['loc'], data['prob']
+                else:
+                    feature, loc, prob = self.get(itv.data, item - itv.begin)
+                    np.savez(
+                        frozen_file,
+                        feature=feature, loc=loc, prob=prob
+                    )
+                    self.__saved_feature_slices.append(str(item))
+            else:
+                feature, loc, prob = self.get(itv.data, item - itv.begin)
             feature = torch.tensor(feature).permute(2, 0, 1)
         elif isinstance(item, slice):
             start, stop, step = item.indices(len(self))
             item = range(start, stop, step)
             item_info = map(lambda i: next(filter(lambda x: x.begin <= i < x.end, index)), item)
-            item_info = map(lambda x: (x[0].data, x[1] - x[0].begin), zip(item_info, item))
-            feature, loc, prob = list(zip(*map(lambda x: self.get(*x), item_info)))
+            item_info = list(map(lambda x: (x[0].data, x[1] - x[0].begin), zip(item_info, item)))
+
+            if self.__freeze:
+                features, locs, probs = [], [], []
+                for n in item:
+                    frozen_file = os.path.join(self.__feature_slices_path, f'{n}.npz')
+                    if str(n) in self.__saved_feature_slices:
+                        data = np.load(frozen_file)
+                        feature, loc, prob = data['feature'], data['loc'], data['prob']
+                    else:
+                        feature, loc, prob = self.get(*item_info[n])
+                        np.savez(
+                            frozen_file,
+                            feature=feature, loc=loc, prob=prob
+                        )
+                        self.__saved_feature_slices.append(str(n))
+                    features.append(feature)
+                    locs.append(loc)
+                    probs.append(prob)
+                feature, loc, prob = features, locs, probs
+            else:
+                feature, loc, prob = list(zip(*map(lambda x: self.get(*x), item_info)))
             loc = torch.stack(loc)
             prob = torch.stack(prob)
             feature = torch.tensor(feature).permute(0, 3, 1, 2)
@@ -88,12 +130,12 @@ class GenDOA(torch.utils.data.Dataset):
             loc = util.x_linear_polar(room['mic_array_location'], loc)
         else:
             raise ValueError(f'Loss type {self.__loss_type} not defined')
-        loc = torch.tensor(loc)
-        prob = torch.ones_like(loc)
+        loc = np.asarray(loc)
+        prob = np.ones_like(loc)
         if loc.shape[-1] < 6:
-            pad = torch.zeros(6 - loc.shape[-1])
-            loc = torch.cat((loc, pad), dim=-1)
-            prob = torch.cat((prob, pad), dim=-1)
+            pad = np.zeros(6 - loc.shape[-1])
+            loc = np.concatenate((loc, pad), axis=-1)
+            prob = np.concatenate((prob, pad), axis=-1)
         return feature, loc, prob
 
     def wave(self, filename):
