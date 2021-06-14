@@ -25,7 +25,7 @@ torch.random.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
 
-def PIT(doa, target, loc, prob, divide_criterion, prob_criterion, device='cpu'):
+def PIT(doa, target, loc, prob, divide_criterion, prob_criterion):
     """
     get PIT doa
     :param doa: predict doa of speakers  [nBatch, 6]
@@ -43,7 +43,7 @@ def PIT(doa, target, loc, prob, divide_criterion, prob_criterion, device='cpu'):
     prob = prob.to(device)
     nBatch = doa.shape[0]
     active_speakers_number = (target == 1).sum(dim=1)  # active number of each batch  [nBatch]
-    count = perm(6, active_speakers_number)  # [nBatch]
+    count = perm(6, active_speakers_number.cpu())  # [nBatch]
     active_doa = torch.empty((nBatch, 6), device=device)
     for iBatch in range(nBatch):
         cnt = int(count[iBatch])  # int(A(6, n))
@@ -51,19 +51,20 @@ def PIT(doa, target, loc, prob, divide_criterion, prob_criterion, device='cpu'):
         pad_prob = torch.repeat_interleave(prob[iBatch].unsqueeze(dim=0), repeats=cnt, dim=0)  # [cnt, 6]
         true_active_doa = torch.empty((cnt, 6), device=device)  # [cnt, 6]
         true_active_target = torch.repeat_interleave(target[iBatch].unsqueeze(dim=0), repeats=cnt, dim=0)  # [cnt, 6]
-        pad_loc.to(device)
-        pad_prob.to(device)
-        true_active_target.to(device)
+        # pad_loc.to(device)
+        # pad_prob.to(device)
+        # true_active_target.to(device)
         pit_doa_loss = []
         pit_target_loss = []
         ip = 0
         for p in permutations(doa[iBatch], int(active_speakers_number[iBatch])):
             # A(6,active_speakers_number[iBatch]){doa[iBatch]}=cnt
             p = torch.tensor(list(p))  # p:one sequence in A(6, n), len(p)=n
+            index = 0
             for i, probability in enumerate(target[iBatch]):
-                index = 0
                 if probability == 1:  # fill (target != 0) with sequence in permutations
                     true_active_doa[ip][i] = p[index]
+                    index += 1
                 else:
                     true_active_doa[ip][i] = 0
             pit_doa = divide_criterion(true_active_doa[ip].float(), pad_loc[ip].float())
@@ -96,7 +97,7 @@ def train():
     batch_size = args.batch_size
     loss_type = args.loss
     dataset = args.dataset
-    foldername = '{}_batch{}'.format(args.loss, batch_size)
+    foldername = f'{args.loss}_batch{batch_size}'
     outpath = os.path.join(args.outputs, foldername)
     os.makedirs(outpath, exist_ok=True)
     savepath = os.path.join(outpath, 'best_model.{epoch:02d}-{val_loss:.6f}.h5')
@@ -115,7 +116,7 @@ def train():
     )
 
     # initialize model
-    crnn = CRNN().to(device)
+    model = CRNN().to(device)
 
     train_loss = []
     valid_loss = []
@@ -124,13 +125,13 @@ def train():
     # scheduler
     divide_criterion = nn.MSELoss(reduction='mean')
     prob_criterion = nn.BCELoss(weight=None, size_average=None, reduce=None, reduction='mean')
-    optimizer = torch.optim.Adam(params=crnn.parameters(), lr=1e-4, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-4, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # train
     for epoch in range(epochs):
         total_train_loss = []
-        crnn.train()
+        model.train()
         print(f'# epoch {epoch}')
 
         # batch data entries
@@ -145,13 +146,13 @@ def train():
 
             # forward, backward, update weights
             optimizer.zero_grad()
-            doa, target = crnn(feature.to(device))
+            doa, target = model(feature.to(device))
 
             active_doa = PIT(doa, target, loc, prob, divide_criterion, prob_criterion)
 
-            loss1 = divide_criterion(active_doa.float(), loc.float())
-            loss2 = prob_criterion(target.cpu().float(), prob.float())
-            print(f'step {i}: loss1={loss1}, loss2={loss2}')
+            loss1 = divide_criterion(active_doa.float(), loc.float().to(device))
+            loss2 = prob_criterion(target.float(), prob.float().to(device))
+            print(f'epoch {epoch} step {i}: loss1={loss1}, loss2={loss2}')
             loss = torch.add(loss1, loss2)  # adjust alpha
 
             loss.backward()
@@ -164,20 +165,20 @@ def train():
 
         # validate
         total_valid_loss = []
-        crnn.eval()
+        model.eval()
         for i, val_data in enumerate(val_loader):
             feature, loc, prob = val_data
             with torch.no_grad():
-                doa, target = crnn(feature.to(device))
+                doa, target = model(feature.to(device))
             active_doa = PIT(doa, target, loc, prob, divide_criterion, prob_criterion)
-            loss1 = divide_criterion(active_doa.float(), loc.float())
-            loss2 = prob_criterion(target.float(), prob.float())
+            loss1 = divide_criterion(active_doa.float(), loc.float().to(device))
+            loss2 = prob_criterion(target.float(), prob.float().to(device))
             loss = torch.add(loss1, loss2)
             total_valid_loss.append(loss.item())
         valid_loss.append(np.mean(total_valid_loss))
 
         if valid_loss[-1] < min_valid_loss:
-            torch.save({'epoch': epoch, 'model': crnn, 'train_loss': train_loss,
+            torch.save({'epoch': epoch, 'model': model, 'train_loss': train_loss,
                         'valid_loss': valid_loss}, './LSTM.model')
             #         torch.save(optimizer, './crnn.optim')
             min_valid_loss = valid_loss[-1]
