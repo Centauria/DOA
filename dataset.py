@@ -65,7 +65,8 @@ class GenDOA(torch.utils.data.Dataset):
         if isinstance(item, int):
             itv = index[0]
             if self.__freeze:
-                frozen_file = os.path.join(self.__feature_slices_path, f'{item}.npz')
+                item_a, item_b = divmod(item, 1000)
+                frozen_file = os.path.join(self.__feature_slices_path, str(item_a), f'{item_b}.npz')
                 if str(item) in self.__saved_feature_slices:
                     data = np.load(frozen_file)
                     feature, loc, prob = data['feature'], data['loc'], data['prob']
@@ -88,7 +89,8 @@ class GenDOA(torch.utils.data.Dataset):
             if self.__freeze:
                 features, locs, probs = [], [], []
                 for n in item:
-                    frozen_file = os.path.join(self.__feature_slices_path, f'{n}.npz')
+                    n_a, n_b = divmod(n, 1000)
+                    frozen_file = os.path.join(self.__feature_slices_path, str(n_a), f'{n_b}.npz')
                     if str(n) in self.__saved_feature_slices:
                         data = np.load(frozen_file)
                         feature, loc, prob = data['feature'], data['loc'], data['prob']
