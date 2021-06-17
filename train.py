@@ -12,7 +12,7 @@ import torch.optim
 import torch.utils.data
 from scipy.special import perm
 
-from dataset import GenDOA
+from dataset import GenDOA, DataLoaderX
 from models.crnn import CRNN
 
 plt.switch_backend('agg')
@@ -97,7 +97,7 @@ def train():
     batch_size = args.batch_size
     loss_type = args.loss
     dataset = args.dataset
-    foldername = f'{args.loss}_batch{batch_size}'
+    foldername = f'{loss_type}_batch{batch_size}'
     outpath = os.path.join(args.outputs, foldername)
     os.makedirs(outpath, exist_ok=True)
     savepath = os.path.join(outpath, 'best_model.{epoch:02d}-{val_loss:.6f}.h5')
@@ -108,10 +108,10 @@ def train():
     # prob shape :(Batch, 6)
     train_data = GenDOA(dataset, split='train', loss_type=loss_type)  # feature, loc, prob
     val_data = GenDOA(dataset, split='test', loss_type=loss_type)
-    train_loader = torch.utils.data.DataLoader(
+    train_loader = DataLoaderX(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, drop_last=True
     )
-    val_loader = torch.utils.data.DataLoader(
+    val_loader = DataLoaderX(
         val_data, batch_size=batch_size, shuffle=True, num_workers=workers, drop_last=True
     )
 
@@ -133,6 +133,7 @@ def train():
         total_train_loss = []
         model.train()
         print(f'# epoch {epoch}')
+        lr = optimizer.param_groups[0]['lr']
 
         # batch data entries
         # feature shape:(nBatch, 6, 25, 513)
@@ -179,16 +180,13 @@ def train():
 
         if valid_loss[-1] < min_valid_loss:
             torch.save({'epoch': epoch, 'model': model, 'train_loss': train_loss,
-                        'valid_loss': valid_loss}, './LSTM.model')
+                        'valid_loss': valid_loss}, os.path.join(outpath, 'LSTM.model'))
             #         torch.save(optimizer, './crnn.optim')
             min_valid_loss = valid_loss[-1]
 
-        log_string = ('iter: [{:d}/{:d}], train_loss: {:0.6f}, valid_loss: {:0.6f}, '
-                      'best_valid_loss: {:0.6f}, lr: {:0.7f}').format((epoch + 1), epochs,
-                                                                      train_loss[-1],
-                                                                      valid_loss[-1],
-                                                                      min_valid_loss,
-                                                                      optimizer.param_groups[0]['lr'])
+        log_string = 'iter: [{:d}/{:d}], train_loss: {:0.6f}, valid_loss: {:0.6f}, ' \
+                     'best_valid_loss: {:0.6f}, lr: {:0.7f}' \
+            .format(epoch + 1, epochs, train_loss[-1], valid_loss[-1], min_valid_loss, lr)
         scheduler.step()
         print(str() + f'{datetime.now()}: {log_string}')
 

@@ -8,6 +8,8 @@ import ruamel_yaml as yaml
 import torch
 import torch.utils.data
 from intervaltree import IntervalTree
+from prefetch_generator import BackgroundGenerator
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import util
@@ -55,10 +57,6 @@ class GenDOA(torch.utils.data.Dataset):
         if freeze:
             self.__feature_slices_path = os.path.join(feature_path, '.sliced')
             os.makedirs(self.__feature_slices_path, exist_ok=True)
-            self.__saved_feature_slices = list(map(
-                lambda x: x.replace('.npy', ''),
-                os.listdir(self.__feature_slices_path)
-            ))
 
     def __getitem__(self, item):
         index = sorted(self.indexes[item])
@@ -67,7 +65,7 @@ class GenDOA(torch.utils.data.Dataset):
             if self.__freeze:
                 item_a, item_b = divmod(item, 1000)
                 frozen_file = os.path.join(self.__feature_slices_path, str(item_a), f'{item_b}.npz')
-                if str(item) in self.__saved_feature_slices:
+                if os.path.exists(frozen_file):
                     data = np.load(frozen_file)
                     feature, loc, prob = data['feature'], data['loc'], data['prob']
                 else:
@@ -76,7 +74,6 @@ class GenDOA(torch.utils.data.Dataset):
                         frozen_file,
                         feature=feature, loc=loc, prob=prob
                     )
-                    self.__saved_feature_slices.append(str(item))
             else:
                 feature, loc, prob = self.get(itv.data, item - itv.begin)
             feature = torch.tensor(feature).permute(2, 0, 1)
@@ -91,7 +88,7 @@ class GenDOA(torch.utils.data.Dataset):
                 for n in item:
                     n_a, n_b = divmod(n, 1000)
                     frozen_file = os.path.join(self.__feature_slices_path, str(n_a), f'{n_b}.npz')
-                    if str(n) in self.__saved_feature_slices:
+                    if os.path.exists(frozen_file):
                         data = np.load(frozen_file)
                         feature, loc, prob = data['feature'], data['loc'], data['prob']
                     else:
@@ -100,7 +97,6 @@ class GenDOA(torch.utils.data.Dataset):
                             frozen_file,
                             feature=feature, loc=loc, prob=prob
                         )
-                        self.__saved_feature_slices.append(str(n))
                     features.append(feature)
                     locs.append(loc)
                     probs.append(prob)
@@ -180,6 +176,11 @@ class GenDOA(torch.utils.data.Dataset):
         lengths = list(map(len, lo))
         probs = [[1] * n + [0] * (6 - n) for n in lengths]
         return lo, probs
+
+
+class DataLoaderX(DataLoader):
+    def __iter__(self):
+        return BackgroundGenerator(super().__iter__())
 
 
 def max_end_time(track_info):
