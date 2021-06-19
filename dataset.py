@@ -21,6 +21,7 @@ class GenDOA(torch.utils.data.Dataset):
         else:
             raise FileNotFoundError(f'Meta folder {meta_path} does not exist')
         records = os.listdir(meta_path)
+        records = get_subset(records, meta_path)
         self.indexes = list(map(lambda s: os.path.splitext(s)[0], records))
         feature_path = os.path.join(dataset_path, 'features', split) if feature_path is None else feature_path
         if os.path.isdir(feature_path):
@@ -87,3 +88,19 @@ class GenDOA(torch.utils.data.Dataset):
         with open(os.path.join(self.__room_path, room_filename + '.yml')) as f:
             room = yaml.safe_load(f)
         return room
+
+
+def get_subset(records, dataset_path):
+    """
+    :return: subset  list of speaker_number==5 json filename
+    """
+    subset = []
+    for record in records:
+        with open(os.path.join(dataset_path, record), encoding='utf8')as f:
+            data = json.load(f)
+            speaker_number = len(data)
+            if speaker_number == 5:
+                subset.append(record)
+            else:
+                continue
+    return subset
