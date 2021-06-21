@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import os
+import random
 
 import librosa
 import numpy as np
@@ -8,6 +9,7 @@ import ruamel_yaml as yaml
 import torch
 import torch.nn.functional as F
 import torch.utils.data
+import zmq
 from intervaltree import IntervalTree
 from prefetch_generator import BackgroundGenerator
 from torch.utils.data import DataLoader
@@ -18,7 +20,9 @@ import util
 
 class GenDOA(torch.utils.data.Dataset):
     def __init__(self, dataset_path, split='train', feature_path=None,
-                 loss_type='xpolar', pad_strategy='zero', freeze=True, frozen_path=None):
+                 loss_type='xpolar', pad_strategy='zero',
+                 freeze=True, frozen_path=None,
+                 remote_source=None):
         self.__path = dataset_path
         self.__split = split
         meta_path = os.path.join(dataset_path, 'meta', split, 'records')
@@ -63,62 +67,16 @@ class GenDOA(torch.utils.data.Dataset):
             os.makedirs(self.__loc_slices_path, exist_ok=True)
             self.__prob_slices_path = os.path.join(frozen_path, 'prob')
             os.makedirs(self.__prob_slices_path, exist_ok=True)
+        self.__data_source = ['local']
+        if remote_source is not None:
+            self.__data_source.extend(remote_source)
 
     def __getitem__(self, item):
-        index = sorted(self.indexes[item])
-        if isinstance(item, int):
-            itv = index[0]
-            if self.__freeze:
-                item_a, item_b = divmod(item, 1000)
-                frozen_file = os.path.join(str(item_a), f'{item_b}.pt')
-                if os.path.exists(frozen_file):
-                    feature = torch.load(os.path.join(self.__feature_slices_path, frozen_file))
-                    loc = torch.load(os.path.join(self.__loc_slices_path, frozen_file))
-                    prob = torch.load(os.path.join(self.__prob_slices_path, frozen_file))
-                else:
-                    feature, loc, prob = self.get(itv.data, item - itv.begin)
-                    for path in (self.__feature_slices_path, self.__loc_slices_path, self.__prob_slices_path):
-                        os.makedirs(os.path.join(path, str(item_a)), exist_ok=True)
-                    torch.save(feature, os.path.join(self.__feature_slices_path, frozen_file))
-                    torch.save(loc, os.path.join(self.__loc_slices_path, frozen_file))
-                    torch.save(prob, os.path.join(self.__prob_slices_path, frozen_file))
-            else:
-                feature, loc, prob = self.get(itv.data, item - itv.begin)
-
-        elif isinstance(item, slice):
-            start, stop, step = item.indices(len(self))
-            item = range(start, stop, step)
-            item_info = map(lambda i: next(filter(lambda x: x.begin <= i < x.end, index)), item)
-            item_info = list(map(lambda x: (x[0].data, x[1] - x[0].begin), zip(item_info, item)))
-
-            if self.__freeze:
-                features, locs, probs = [], [], []
-                for n in item:
-                    n_a, n_b = divmod(n, 1000)
-                    frozen_file = os.path.join(str(n_a), f'{n_b}.pt')
-                    if os.path.exists(frozen_file):
-                        feature = torch.load(os.path.join(self.__feature_slices_path, frozen_file))
-                        loc = torch.load(os.path.join(self.__loc_slices_path, frozen_file))
-                        prob = torch.load(os.path.join(self.__prob_slices_path, frozen_file))
-                    else:
-                        feature, loc, prob = self.get(*item_info[n])
-                        for path in (self.__feature_slices_path, self.__loc_slices_path, self.__prob_slices_path):
-                            os.makedirs(os.path.join(path, str(n_a)), exist_ok=True)
-                        torch.save(feature, os.path.join(self.__feature_slices_path, frozen_file))
-                        torch.save(loc, os.path.join(self.__loc_slices_path, frozen_file))
-                        torch.save(prob, os.path.join(self.__prob_slices_path, frozen_file))
-                    features.append(feature)
-                    locs.append(loc)
-                    probs.append(prob)
-                feature, loc, prob = features, locs, probs
-            else:
-                feature, loc, prob = list(zip(*map(lambda x: self.get(*x), item_info)))
-            loc = torch.stack(loc)
-            prob = torch.stack(prob)
-            feature = torch.stack(feature)
+        if len(self.__data_source) == 1:
+            source = self.__data_source[0]
         else:
-            raise ValueError('Index must be int or slice')
-        return feature, loc, prob
+            source = random.choice(self.__data_source)
+        return self.getitem(item, source)
 
     def __len__(self):
         return self.indexes.end() - self.indexes.begin()
@@ -143,6 +101,69 @@ class GenDOA(torch.utils.data.Dataset):
         loc = F.pad(loc, (0, 6 - loc.shape[-1]))
         prob = F.pad(prob, (0, 6 - prob.shape[-1]))
         feature = torch.tensor(feature).permute(2, 0, 1)
+        return feature, loc, prob
+
+    def getitem(self, item, source='local'):
+        if source == 'local':
+            index = sorted(self.indexes[item])
+            if isinstance(item, int):
+                itv = index[0]
+                if self.__freeze:
+                    item_a, item_b = divmod(item, 1000)
+                    frozen_file = os.path.join(str(item_a), f'{item_b}.pt')
+                    if os.path.exists(frozen_file):
+                        feature = torch.load(os.path.join(self.__feature_slices_path, frozen_file))
+                        loc = torch.load(os.path.join(self.__loc_slices_path, frozen_file))
+                        prob = torch.load(os.path.join(self.__prob_slices_path, frozen_file))
+                    else:
+                        feature, loc, prob = self.get(itv.data, item - itv.begin)
+                        for path in (self.__feature_slices_path, self.__loc_slices_path, self.__prob_slices_path):
+                            os.makedirs(os.path.join(path, str(item_a)), exist_ok=True)
+                        torch.save(feature, os.path.join(self.__feature_slices_path, frozen_file))
+                        torch.save(loc, os.path.join(self.__loc_slices_path, frozen_file))
+                        torch.save(prob, os.path.join(self.__prob_slices_path, frozen_file))
+                else:
+                    feature, loc, prob = self.get(itv.data, item - itv.begin)
+
+            elif isinstance(item, slice):
+                start, stop, step = item.indices(len(self))
+                item = range(start, stop, step)
+                item_info = map(lambda i: next(filter(lambda x: x.begin <= i < x.end, index)), item)
+                item_info = list(map(lambda x: (x[0].data, x[1] - x[0].begin), zip(item_info, item)))
+
+                if self.__freeze:
+                    features, locs, probs = [], [], []
+                    for n in item:
+                        n_a, n_b = divmod(n, 1000)
+                        frozen_file = os.path.join(str(n_a), f'{n_b}.pt')
+                        if os.path.exists(frozen_file):
+                            feature = torch.load(os.path.join(self.__feature_slices_path, frozen_file))
+                            loc = torch.load(os.path.join(self.__loc_slices_path, frozen_file))
+                            prob = torch.load(os.path.join(self.__prob_slices_path, frozen_file))
+                        else:
+                            feature, loc, prob = self.get(*item_info[n])
+                            for path in (self.__feature_slices_path, self.__loc_slices_path, self.__prob_slices_path):
+                                os.makedirs(os.path.join(path, str(n_a)), exist_ok=True)
+                            torch.save(feature, os.path.join(self.__feature_slices_path, frozen_file))
+                            torch.save(loc, os.path.join(self.__loc_slices_path, frozen_file))
+                            torch.save(prob, os.path.join(self.__prob_slices_path, frozen_file))
+                        features.append(feature)
+                        locs.append(loc)
+                        probs.append(prob)
+                    feature, loc, prob = features, locs, probs
+                else:
+                    feature, loc, prob = list(zip(*map(lambda x: self.get(*x), item_info)))
+                loc = torch.stack(loc)
+                prob = torch.stack(prob)
+                feature = torch.stack(feature)
+            else:
+                raise ValueError('Index must be int or slice')
+        else:
+            context = zmq.Context()
+            sock = context.socket(zmq.REQ)
+            sock.connect(f'tcp://{source}')
+            sock.send_pyobj((self.__split, item))
+            feature, loc, prob = sock.recv_pyobj()
         return feature, loc, prob
 
     def wave(self, filename):

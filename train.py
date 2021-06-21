@@ -88,6 +88,7 @@ def train():
     parser.add_argument("--loader-workers", "-w", type=int, default=8, help="Threads used in Dataloader")
     parser.add_argument("--loss", "-lo", type=str, choices=["cartesian", "polar", "xpolar"], default="xpolar",
                         help="Choose loss representation")
+    parser.add_argument("--data-source", "-s", action="append", help="Specify remote data source")
 
     args = parser.parse_args()
     assert os.path.exists(args.dataset)
@@ -106,8 +107,8 @@ def train():
     # feature shape:(Batch, 6, 25, 513)
     # loc shape:(Batch, 6)
     # prob shape :(Batch, 6)
-    train_data = GenDOA(dataset, split='train', loss_type=loss_type)
-    val_data = GenDOA(dataset, split='test', loss_type=loss_type)
+    train_data = GenDOA(dataset, split='train', loss_type=loss_type, remote_source=args.data_source)
+    val_data = GenDOA(dataset, split='test', loss_type=loss_type, remote_source=args.data_source)
     train_loader = DataLoaderX(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, drop_last=True
     )
