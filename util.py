@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import sys
+
 import numpy as np
 
 
@@ -29,3 +31,7 @@ def x_linear_polar(mic_array_location, sources_location):
     r = np.linalg.norm(xyz, axis=1)
     alpha = np.arccos(xyz[:, 0] / r)
     return np.asarray(alpha)
+
+
+def error(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)

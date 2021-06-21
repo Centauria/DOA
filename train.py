@@ -106,7 +106,7 @@ def train():
     # feature shape:(Batch, 6, 25, 513)
     # loc shape:(Batch, 6)
     # prob shape :(Batch, 6)
-    train_data = GenDOA(dataset, split='train', loss_type=loss_type)  # feature, loc, prob
+    train_data = GenDOA(dataset, split='train', loss_type=loss_type)
     val_data = GenDOA(dataset, split='test', loss_type=loss_type)
     train_loader = DataLoaderX(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, drop_last=True
@@ -132,8 +132,8 @@ def train():
     for epoch in range(epochs):
         total_train_loss = []
         model.train()
-        print(f'# epoch {epoch}')
         lr = optimizer.param_groups[0]['lr']
+        print(f'# epoch {epoch}, lr={lr}')
 
         # batch data entries
         # feature shape:(nBatch, 6, 25, 513)
