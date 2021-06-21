@@ -6,6 +6,7 @@ import librosa
 import numpy as np
 import ruamel_yaml as yaml
 import torch
+import torch.nn.functional as F
 import torch.utils.data
 from intervaltree import IntervalTree
 from prefetch_generator import BackgroundGenerator
@@ -17,7 +18,7 @@ import util
 
 class GenDOA(torch.utils.data.Dataset):
     def __init__(self, dataset_path, split='train', feature_path=None,
-                 loss_type='xpolar', pad_strategy='zero', freeze=True):
+                 loss_type='xpolar', pad_strategy='zero', freeze=True, frozen_path=None):
         self.__path = dataset_path
         self.__split = split
         meta_path = os.path.join(dataset_path, 'meta', split, 'records')
@@ -27,7 +28,7 @@ class GenDOA(torch.utils.data.Dataset):
             raise FileNotFoundError(f'Meta folder {meta_path} does not exist')
         records = os.listdir(meta_path)
         self.file_indexes = list(map(lambda s: os.path.splitext(s)[0], records))
-        feature_path = os.path.join(dataset_path, 'features', split) if feature_path is None else feature_path
+        feature_path = feature_path or os.path.join(dataset_path, 'features', split)
         if os.path.isdir(feature_path):
             self.__feature_path = feature_path
         else:
@@ -55,8 +56,13 @@ class GenDOA(torch.utils.data.Dataset):
             n += s_num
         self.__freeze = freeze
         if freeze:
-            self.__feature_slices_path = os.path.join(feature_path, '.sliced')
+            frozen_path = frozen_path or os.path.join(feature_path, '.sliced')
+            self.__feature_slices_path = os.path.join(frozen_path, 'features')
             os.makedirs(self.__feature_slices_path, exist_ok=True)
+            self.__loc_slices_path = os.path.join(frozen_path, 'loc')
+            os.makedirs(self.__loc_slices_path, exist_ok=True)
+            self.__prob_slices_path = os.path.join(frozen_path, 'prob')
+            os.makedirs(self.__prob_slices_path, exist_ok=True)
 
     def __getitem__(self, item):
         index = sorted(self.indexes[item])
@@ -64,19 +70,21 @@ class GenDOA(torch.utils.data.Dataset):
             itv = index[0]
             if self.__freeze:
                 item_a, item_b = divmod(item, 1000)
-                frozen_file = os.path.join(self.__feature_slices_path, str(item_a), f'{item_b}.npz')
+                frozen_file = os.path.join(str(item_a), f'{item_b}.pt')
                 if os.path.exists(frozen_file):
-                    data = np.load(frozen_file)
-                    feature, loc, prob = data['feature'], data['loc'], data['prob']
+                    feature = torch.load(os.path.join(self.__feature_slices_path, frozen_file))
+                    loc = torch.load(os.path.join(self.__loc_slices_path, frozen_file))
+                    prob = torch.load(os.path.join(self.__prob_slices_path, frozen_file))
                 else:
                     feature, loc, prob = self.get(itv.data, item - itv.begin)
-                    np.savez(
-                        frozen_file,
-                        feature=feature, loc=loc, prob=prob
-                    )
+                    for path in (self.__feature_slices_path, self.__loc_slices_path, self.__prob_slices_path):
+                        os.makedirs(os.path.join(path, str(item_a)), exist_ok=True)
+                    torch.save(feature, os.path.join(self.__feature_slices_path, frozen_file))
+                    torch.save(loc, os.path.join(self.__loc_slices_path, frozen_file))
+                    torch.save(prob, os.path.join(self.__prob_slices_path, frozen_file))
             else:
                 feature, loc, prob = self.get(itv.data, item - itv.begin)
-            feature = torch.tensor(feature).permute(2, 0, 1)
+
         elif isinstance(item, slice):
             start, stop, step = item.indices(len(self))
             item = range(start, stop, step)
@@ -87,16 +95,18 @@ class GenDOA(torch.utils.data.Dataset):
                 features, locs, probs = [], [], []
                 for n in item:
                     n_a, n_b = divmod(n, 1000)
-                    frozen_file = os.path.join(self.__feature_slices_path, str(n_a), f'{n_b}.npz')
+                    frozen_file = os.path.join(str(n_a), f'{n_b}.pt')
                     if os.path.exists(frozen_file):
-                        data = np.load(frozen_file)
-                        feature, loc, prob = data['feature'], data['loc'], data['prob']
+                        feature = torch.load(os.path.join(self.__feature_slices_path, frozen_file))
+                        loc = torch.load(os.path.join(self.__loc_slices_path, frozen_file))
+                        prob = torch.load(os.path.join(self.__prob_slices_path, frozen_file))
                     else:
                         feature, loc, prob = self.get(*item_info[n])
-                        np.savez(
-                            frozen_file,
-                            feature=feature, loc=loc, prob=prob
-                        )
+                        for path in (self.__feature_slices_path, self.__loc_slices_path, self.__prob_slices_path):
+                            os.makedirs(os.path.join(path, str(n_a)), exist_ok=True)
+                        torch.save(feature, os.path.join(self.__feature_slices_path, frozen_file))
+                        torch.save(loc, os.path.join(self.__loc_slices_path, frozen_file))
+                        torch.save(prob, os.path.join(self.__prob_slices_path, frozen_file))
                     features.append(feature)
                     locs.append(loc)
                     probs.append(prob)
@@ -105,7 +115,7 @@ class GenDOA(torch.utils.data.Dataset):
                 feature, loc, prob = list(zip(*map(lambda x: self.get(*x), item_info)))
             loc = torch.stack(loc)
             prob = torch.stack(prob)
-            feature = torch.tensor(feature).permute(0, 3, 1, 2)
+            feature = torch.stack(feature)
         else:
             raise ValueError('Index must be int or slice')
         return feature, loc, prob
@@ -128,12 +138,11 @@ class GenDOA(torch.utils.data.Dataset):
             loc = util.x_linear_polar(room['mic_array_location'], loc)
         else:
             raise ValueError(f'Loss type {self.__loss_type} not defined')
-        loc = np.asarray(loc)
-        prob = np.ones_like(loc)
-        if loc.shape[-1] < 6:
-            pad = np.zeros(6 - loc.shape[-1])
-            loc = np.concatenate((loc, pad), axis=-1)
-            prob = np.concatenate((prob, pad), axis=-1)
+        loc = torch.tensor(loc)
+        prob = torch.ones_like(loc)
+        loc = F.pad(loc, (0, 6 - loc.shape[-1]))
+        prob = F.pad(prob, (0, 6 - prob.shape[-1]))
+        feature = torch.tensor(feature).permute(2, 0, 1)
         return feature, loc, prob
 
     def wave(self, filename):
