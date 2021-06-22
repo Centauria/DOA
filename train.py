@@ -159,7 +159,6 @@ def train():
 
             loss.backward()
             optimizer.step()
-            scheduler.step()
             total_train_loss.append(loss.item())
 
         # record train_loss
