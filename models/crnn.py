@@ -54,10 +54,7 @@ class CRNN(nn.Module):
         x = x.transpose(1, 2)
         x = x.flatten(start_dim=2)
         # x: [batch, 25, 128]
-        x = x.transpose(0, 1)
         x, _ = self.rnn(x)
-        # x: [25, batch, 128]
-        x = x.transpose(0, 1)
         # x: [batch, 25, 128]
 
         prob = self.prob(x)
