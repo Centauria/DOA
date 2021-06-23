@@ -1,5 +1,6 @@
 # _*_ coding: UTF-8 _*_
 import argparse
+import csv
 import os
 from datetime import datetime
 from itertools import permutations
@@ -89,6 +90,7 @@ def train():
     parser.add_argument("--loss", "-lo", type=str, choices=["cartesian", "polar", "xpolar"], default="xpolar",
                         help="Choose loss representation")
     parser.add_argument("--data-source", "-s", action="append", help="Specify remote data source")
+    parser.add_argument("--status", help="Manual load status file")
 
     args = parser.parse_args()
     assert os.path.exists(args.dataset)
@@ -98,10 +100,9 @@ def train():
     batch_size = args.batch_size
     loss_type = args.loss
     dataset = args.dataset
-    foldername = f'{loss_type}_batch{batch_size}'
-    outpath = os.path.join(args.outputs, foldername)
-    os.makedirs(outpath, exist_ok=True)
-    savepath = os.path.join(outpath, 'best_model.{epoch:02d}-{val_loss:.6f}.h5')
+    save_folder_name = f'{loss_type}_batch{batch_size}'
+    save_path = os.path.join(args.outputs, save_folder_name)
+    os.makedirs(save_path, exist_ok=True)
 
     # read data input
     # feature shape:(Batch, 6, 25, 513)
@@ -119,18 +120,43 @@ def train():
     # initialize model
     model = CRNN().to(device)
 
-    train_loss = []
-    valid_loss = []
-    min_valid_loss = np.inf
+    train_loss_list = []
+    valid_loss_list = []
+
+    loss_record_path = os.path.join(save_path, 'loss_record.csv')
+    if not os.path.exists(loss_record_path):
+        with open(loss_record_path, 'a') as f:
+            writer = csv.writer(f)
+            writer.writerow(['epoch', 'train_loss', 'val_loss'])
 
     # scheduler
     divide_criterion = nn.MSELoss(reduction='mean')
     prob_criterion = nn.BCELoss(weight=None, size_average=None, reduce=None, reduction='mean')
     optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-4, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.1)
+
+    latest_status_path = args.status or os.path.join(save_path, 'latest_status.pt')
+    if os.path.exists(latest_status_path):
+        status = torch.load(latest_status_path)
+        latest_epoch = status['epoch']
+        model.load_state_dict(status['model'])
+        optimizer.load_state_dict(status['optimizer'])
+        scheduler.load_state_dict(status['scheduler'])
+    else:
+        latest_epoch = -1
+
+    best_status_path = os.path.join(save_path, 'best_status.pt')
+    if os.path.exists(best_status_path):
+        status = torch.load(best_status_path)
+        min_valid_loss = status['valid_loss']
+    else:
+        min_valid_loss = np.inf
 
     # train
     for epoch in range(epochs):
+        if epoch <= latest_epoch:
+            print(f'# Skipping epoch {epoch}')
+            continue
         total_train_loss = []
         model.train()
         lr = optimizer.param_groups[0]['lr']
@@ -161,8 +187,8 @@ def train():
             optimizer.step()
             total_train_loss.append(loss.item())
 
-        # record train_loss
-        train_loss.append(np.mean(total_train_loss))
+        train_loss = np.mean(total_train_loss)
+        train_loss_list.append(train_loss)
 
         # validate
         total_valid_loss = []
@@ -176,19 +202,31 @@ def train():
             loss2 = prob_criterion(target.float(), prob.float().to(device))
             loss = torch.add(loss1, loss2)
             total_valid_loss.append(loss.item())
-        valid_loss.append(np.mean(total_valid_loss))
 
-        if valid_loss[-1] < min_valid_loss:
-            torch.save({'epoch': epoch, 'model': model, 'train_loss': train_loss,
-                        'valid_loss': valid_loss}, os.path.join(outpath, 'LSTM.model'))
-            #         torch.save(optimizer, './crnn.optim')
-            min_valid_loss = valid_loss[-1]
+        valid_loss = np.mean(total_valid_loss)
+        valid_loss_list.append(valid_loss)
+
+        status = {
+            'epoch': epoch,
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'train_loss': train_loss,
+            'valid_loss': valid_loss
+        }
+        torch.save(status, os.path.join(save_path, 'latest_status.pt'))
+        if valid_loss < min_valid_loss:
+            torch.save(status, os.path.join(save_path, 'best_status.pt'))
+            min_valid_loss = valid_loss
 
         log_string = 'iter: [{:d}/{:d}], train_loss: {:0.6f}, valid_loss: {:0.6f}, ' \
                      'best_valid_loss: {:0.6f}, lr: {:0.7f}' \
-            .format(epoch + 1, epochs, train_loss[-1], valid_loss[-1], min_valid_loss, lr)
+            .format(epoch + 1, epochs, train_loss, valid_loss, min_valid_loss, lr)
         scheduler.step()
-        print(str() + f'{datetime.now()}: {log_string}')
+        print(f'{datetime.now()}: {log_string}')
+        with open(loss_record_path, 'a') as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, train_loss, valid_loss])
 
 
 if __name__ == "__main__":
