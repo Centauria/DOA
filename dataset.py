@@ -100,7 +100,7 @@ class GenDOA(torch.utils.data.Dataset):
         prob = torch.ones_like(loc)
         loc = F.pad(loc, (0, 6 - loc.shape[-1]))
         prob = F.pad(prob, (0, 6 - prob.shape[-1]))
-        feature = torch.tensor(feature).permute(2, 0, 1)
+        feature = torch.tensor(feature)
         return feature, loc, prob
 
     def getitem(self, item, source='local'):
