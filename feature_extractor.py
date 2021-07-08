@@ -52,9 +52,9 @@ def get_feature_stft(filename, mapping=None):
 def get_feature_intensity(filename):
     x_f = get_feature_stft(filename, mapping=None)
     (lBatch, nChannel, lSentence, nBand) = x_f.shape
-    nFeat = 10
-    h_nFeat = nFeat // 2
-    inputFeat_f = np.empty((lBatch, lSentence, nBand, nFeat), dtype=np.float32)
+    h_nFeat = nChannel - 1
+    nFeat = h_nFeat * 2
+    inputFeat_f = np.empty((lBatch, nFeat, lSentence, nBand), dtype=np.float32)
 
     for nBatch, sig_f in enumerate(x_f):  # Process all examples in the batch
         # Compute the intensity vector in each TF bin
@@ -63,20 +63,21 @@ def get_feature_intensity(filename):
 
         # Normalize it in each TF bin
         coeffNorm = (np.abs(sig_f[0]) ** 2 + np.sum(np.abs(sig_f[1:]) ** 2 / h_nFeat, axis=0))[:, :, np.newaxis]
-        inputFeat_f[nBatch, :, :, :h_nFeat] = np.divide(
+        inputFeat_f[nBatch, :h_nFeat, :, :] = np.divide(
             intensityVect.real, coeffNorm,
             out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
-        )
-        inputFeat_f[nBatch, :, :, h_nFeat:] = np.divide(
+        ).transpose(2, 0, 1)
+        inputFeat_f[nBatch, h_nFeat:, :, :] = np.divide(
             intensityVect.imag, coeffNorm,
             out=np.zeros_like(intensityVect, dtype=np.float32), where=(coeffNorm != 0)
-        )
+        ).transpose(2, 0, 1)
 
     return inputFeat_f
 
 
 def get_feature_lps(filename):
     x_f = get_feature_stft(filename, mapping=None)
+    x_f = np.abs(x_f)
     lps = 20 * np.log10(x_f, where=(x_f > 0), out=-5 * np.ones_like(x_f, dtype=float))
     return lps
 

@@ -25,7 +25,7 @@ class CRNN(nn.Module):
     def __init__(self):
         super().__init__()
         self.cnn = nn.Sequential(
-            CNN_block(6, 64, max_pool_size=(1, 8), padding=(1, 2)),
+            CNN_block(10, 64, max_pool_size=(1, 8), padding=(1, 2)),
             CNN_block(64, 64, max_pool_size=(1, 8), padding=(1, 4)),
             CNN_block(64, 64, max_pool_size=(1, 4), padding=(1, 2)),
         )
