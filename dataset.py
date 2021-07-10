@@ -19,12 +19,14 @@ import util
 
 
 class GenDOA(torch.utils.data.Dataset):
-    def __init__(self, dataset_path, split='train', feature_path=None,
+    def __init__(self, dataset_path, split='train',
+                 output_dim=6, feature_path=None,
                  loss_type='xpolar', pad_strategy='zero',
                  freeze=True, frozen_path=None,
                  remote_source=None):
         self.__path = dataset_path
         self.__split = split
+        self.__output_dim = output_dim
         meta_path = os.path.join(dataset_path, 'meta', split, 'records')
         if os.path.isdir(meta_path):
             self.__meta_path = meta_path
@@ -96,10 +98,10 @@ class GenDOA(torch.utils.data.Dataset):
             loc = util.x_linear_polar(room['mic_array_location'], loc)
         else:
             raise ValueError(f'Loss type {self.__loss_type} not defined')
-        loc = torch.tensor(loc)
+        loc = torch.tensor(loc, dtype=torch.float)
         prob = torch.ones_like(loc)
-        loc = F.pad(loc, (0, 6 - loc.shape[-1]))
-        prob = F.pad(prob, (0, 6 - prob.shape[-1]))
+        loc = F.pad(loc, (0, self.__output_dim - loc.shape[-1]))
+        prob = F.pad(prob, (0, self.__output_dim - prob.shape[-1]))
         feature = torch.tensor(feature)
         return feature, loc, prob
 
@@ -204,7 +206,7 @@ class GenDOA(torch.utils.data.Dataset):
             t += hop_time
         lo = [list(set(map(lambda x: x.data, ss))) for ss in ts]
         lengths = list(map(len, lo))
-        probs = [[1] * n + [0] * (6 - n) for n in lengths]
+        probs = [[1] * n + [0] * (self.__output_dim - n) for n in lengths]
         return lo, probs
 
 
